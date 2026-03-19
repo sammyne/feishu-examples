@@ -5,6 +5,8 @@ use feishu_sdk::event::{
     Event, EventDispatcher, EventDispatcherConfig, EventHandler, EventHandlerResult,
 };
 use feishu_sdk::ws::stream::{StreamClientBuilder, StreamConfig};
+use pulldown_cmark::{Event as MdEvent, Parser, Tag, TagEnd};
+use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -135,27 +137,40 @@ impl MessageEventHandler {
     }
 
     async fn send_reply(&self, chat_id: &str, message: &str) -> Result<()> {
-        info!("Sending reply to chat {}: {}", chat_id, message);
+        info!("Sending markdown reply to chat {}: {}", chat_id, message);
 
         use feishu_sdk::api::{SendMessageBody, SendMessageQuery};
         use feishu_sdk::core::RequestOptions;
 
-        // Build content JSON string
-        let content_text = message.replace('"', "\\\"");
-        let content = format!(r#"{{"text":"{}"}}"#, content_text);
+        // Parse markdown and convert to Feishu rich text format
+        let content_json = serde_json::json!({
+            "config": {
+                "wide_screen_mode": true
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": "**Nanobot Reply**\n\n## hello world\n\n- This is a markdown message\n- Sent by Feishu SDK Rust example\n\n> Quote example\n\n[Link to Feishu](https://open.feishu.cn)\n\n```rust\nfn main() {\n    println!(\"Hello, Feishu!\");\n}\n```"
+                }
+            ]
+        });
 
+        info!(
+            "Request - receive_id: {}, msg_type: post (markdown supported)",
+            chat_id
+        );
+
+        // 构建消息体
         let body = SendMessageBody {
-            receive_id: chat_id.to_string(),
-            msg_type: "text".to_string(),
-            content,
+            receive_id: chat_id.to_owned(),
+            msg_type: "interactive".to_string(),
+            content: serde_json::to_string(&content_json).unwrap_or_default(),
             uuid: None,
         };
 
         let query = SendMessageQuery {
             receive_id_type: Some("chat_id".to_string()),
         };
-
-        info!("Request - receive_id: {}, msg_type: text", chat_id);
 
         let response = self
             .client
@@ -244,9 +259,38 @@ impl EventHandler for MessageEventHandler {
                                 }
                             }
 
-                            // Always reply with "你好"
+                            // Always reply with markdown formatted message
                             info!("Attempting to send reply to chat {}", chat_id);
-                            match self.send_reply(chat_id, "你好").await {
+                            let markdown_response = r#"# 你好！
+
+欢迎使用飞书机器人！这是一个支持 **Markdown 格式** 的消息示例。
+
+## 功能特性
+
+- 支持标题（H1-H6）
+- 支持 `行内代码`
+- 支持代码块：
+  ```rust
+  fn main() {
+      println!("Hello, World!");
+  }
+  ```
+- 支持列表：
+  1. 有序列表项
+  2. 另一项
+  3. 第三项
+
+- 支持引用：
+  > 这是一个引用块
+  > 可以有多行
+
+- 支持分割线：
+  ---
+  
+- 支持链接：[飞书开放平台](https://open.feishu.cn)
+
+**加粗文本** 和 *斜体文本* 以及 ~~删除线~~ 都会保留原始格式。"#;
+                            match self.send_reply(chat_id, markdown_response).await {
                                 Ok(_) => {
                                     info!("Reply sent successfully to chat {}", chat_id);
                                 }
@@ -267,9 +311,11 @@ impl EventHandler for MessageEventHandler {
                             if let Some(chat_id) = message.get("chat_id").and_then(|v| v.as_str()) {
                                 info!("Fallback: Found chat_id in raw event: {}", chat_id);
 
-                                // Try to send reply anyway
-                                if let Err(e) = self.send_reply(chat_id, "你好 (fallback)").await
-                                {
+                                // Try to send reply anyway with markdown
+                                let fallback_response = r#"# 你好 (fallback)
+
+**这是一个备用回复**，使用 Markdown 格式。"#;
+                                if let Err(e) = self.send_reply(chat_id, fallback_response).await {
                                     error!("Fallback reply failed: {:?}", e);
                                 }
                             } else {
